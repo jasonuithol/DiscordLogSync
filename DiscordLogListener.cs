@@ -23,6 +23,9 @@ namespace DiscordLogSync
     /// </summary>
     public class DiscordLogListener : ILogListener, IDisposable
     {
+        // Server name
+        private string ServerName = "Valheim";
+
         // ── Paths ──────────────────────────────────────────────────────────────
         private static readonly string BufferPath =
             Path.Combine(Paths.BepInExRootPath, "DiscordLogBuffer.txt");
@@ -40,6 +43,17 @@ namespace DiscordLogSync
         // ── Constructor ────────────────────────────────────────────────────────
         public DiscordLogListener()
         {
+            // Obtain server name
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i < args.Length - 1; i++)
+            {
+                if (args[i] == "-name")
+                {
+                    ServerName = args[i + 1];
+                    break;
+                }
+            }
+
             // ① Send any leftover buffer from a previous crash before normal logging begins.
             //    Opens/closes the file directly (no _writer yet).
             RecoverAndSendLeftoverBuffer();
@@ -59,8 +73,9 @@ namespace DiscordLogSync
             if (_disposed) return;
 
             // Format: [2026-03-27 14:32:01.456] [Info   ] [PluginName] Message text
-            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-            string line      = $"[{timestamp}] [{e.Level,-7}] [{e.Source?.SourceName ?? "?"}] {e.Data}";
+//            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
+//            string line      = $"[{timestamp}] [{e.Level,-7}] [{e.Source?.SourceName ?? "?"}] {e.Data}";
+            string line = e.Data?.ToString() ?? "";
 
             lock (_fileLock)
             {
@@ -86,7 +101,7 @@ namespace DiscordLogSync
             // Skip if a previous send is still in-flight
             if (Interlocked.CompareExchange(ref _sending, 1, 0) != 0) return;
 
-            try   { TrySendBuffer("📋 Valheim Log"); }
+            try   { TrySendBuffer($"📋 [{ServerName}] {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
             finally { Interlocked.Exchange(ref _sending, 0); }
         }
 
@@ -329,7 +344,7 @@ namespace DiscordLogSync
             // Any remainder beyond one message stays in the buffer for recovery on next start.
             if (Interlocked.CompareExchange(ref _sending, 1, 0) == 0)
             {
-                try   { TrySendBuffer("🛑 Server Shutdown"); }
+                try   { TrySendBuffer($"🛑 [{ServerName}] Server Shutdown - {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
                 catch { }
             }
 
