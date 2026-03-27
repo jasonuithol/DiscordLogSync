@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.1</TargetFramework>
+    <AssemblyName>DiscordLogSync</AssemblyName>
+    <RootNamespace>DiscordLogSync</RootNamespace>
+    <LangVersion>8.0</LangVersion>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <ValheimDir>$(HOME)/.steam/steam/steamapps/common/Valheim dedicated server</ValheimDir>
+    <BepInExDir>$(ValheimDir)/BepInEx</BepInExDir>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>$(BepInExDir)/core/BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>$(BepInExDir)/core/0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="assembly_valheim">
+      <HintPath>$(ValheimDir)/valheim_server_Data/Managed/assembly_valheim.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>$(ValheimDir)/valheim_server_Data/Managed/UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>$(ValheimDir)/valheim_server_Data/Managed/UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

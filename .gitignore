@@ -1,0 +1,6 @@
+bin/
+obj/
+staging/
+release/
+*.kate-swp
+*.cfg
