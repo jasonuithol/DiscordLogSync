@@ -14,7 +14,7 @@ namespace DiscordLogSync
         // Config entries - public so DiscordLogListener can read them
         public static ConfigEntry<string> WebhookUrl;
         public static ConfigEntry<int>    SendIntervalSeconds;
-        public static ConfigEntry<int>    MaxEmbedChars;
+        public static ConfigEntry<int>    MaxMessageChars;
 
         private DiscordLogListener _listener;
 
@@ -28,9 +28,9 @@ namespace DiscordLogSync
                 "Discord", "SendIntervalSeconds", 3,
                 "How often (in seconds) to flush the buffer to Discord. Minimum 2 (Discord rate limit).");
 
-            MaxEmbedChars = Config.Bind(
-                "Discord", "MaxEmbedChars", 3800,
-                "Max characters per Discord embed (max 4096). If buffer exceeds this, oldest lines are dropped.");
+            MaxMessageChars = Config.Bind(
+                "Discord", "MaxMessageChars", 1800,
+                "Max log characters per Discord message (hard limit is 2000). If buffer exceeds this, oldest lines are dropped.");
 
             if (string.IsNullOrWhiteSpace(WebhookUrl.Value))
             {

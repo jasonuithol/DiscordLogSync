@@ -19,7 +19,7 @@ namespace DiscordLogSync
     {
         // ── Paths ──────────────────────────────────────────────────────────────
         private static readonly string BufferPath =
-            Path.Combine(Paths.BepInExRootPath, "DiscordLogSyncBuffer.txt");
+            Path.Combine(Paths.BepInExRootPath, "DiscordLogBuffer.txt");
 
         // ── State ──────────────────────────────────────────────────────────────
         private readonly object    _fileLock  = new object();
@@ -170,33 +170,25 @@ namespace DiscordLogSync
 
         private System.Threading.Tasks.Task PostToDiscord(string title, string content, bool isRecovery)
         {
-            int maxChars = Math.Clamp(Plugin.MaxEmbedChars.Value, 100, 3900);
+            // Reserve 20 chars for the header line + code fence markers (``` ... ```)
+            int maxChars = Math.Clamp(Plugin.MaxMessageChars.Value, 100, 1900);
 
-            // If the buffer is larger than the embed limit, keep the NEWEST lines
+            // If the buffer is larger than the limit, keep the NEWEST lines
             // (oldest are already on Discord from the previous send)
             string body = content;
+
+            // remove empty lines.
+            string body = System.Text.RegularExpressions.Regex.Replace(content, @"\n\s*\n", "\n");
+
             if (body.Length > maxChars)
-                body = "...(oldest lines omitted)...\n" + body.Substring(body.Length - maxChars);
+                body = "(oldest lines omitted)\n" + body.Substring(body.Length - maxChars);
 
-            // Wrap in a code block so Discord preserves formatting
-            string description = "```\n" + body.TrimEnd() + "\n```";
+            // Content field = full width in Discord. Code block = monospace, preserves spacing.
+            // Header line provides the title/context that embeds used to give us.
+//            string message = $"**{title}**\n```\n{body.TrimEnd()}\n```";
+            string message = $"**{title}**\n{body.TrimEnd()}";
 
-            // Color: red if any errors, orange if warnings, blue otherwise
-            int color = ContainsCaseInsensitive(content, "[Fatal]") || ContainsCaseInsensitive(content, "[Error]")
-                ? 0xE74C3C
-                : ContainsCaseInsensitive(content, "[Warning]")
-                    ? 0xF39C12
-                    : isRecovery
-                        ? 0x9B59B6   // purple for recovery
-                        : 0x3498DB;  // blue for normal
-
-            string json = "{"
-                + "\"embeds\":[{"
-                +   $"\"title\":{JsonString(title)},"
-                +   $"\"description\":{JsonString(description)},"
-                +   $"\"color\":{color},"
-                +   "\"footer\":{\"text\":\"Valheim DiscordLogSync\"}"
-                + "}]}";
+            string json = "{\"content\":" + JsonString(message) + "}";
 
             return PostJson(Plugin.WebhookUrl.Value, json);
         }
