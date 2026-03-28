@@ -1,0 +1,9 @@
+{
+    "name": "DiscordLogSync",
+    "version_number": "1.0.1",
+    "website_url": "https://github.com/jasonuithol/DiscordLogSync",
+    "description": "Pipes all BepInEx and Unity server logs to a Discord webhook in near-real-time, with buffering and crash-recovery",
+    "dependencies": [
+        "denikson-BepInExPack_Valheim-5.4.2202"
+    ]
+}

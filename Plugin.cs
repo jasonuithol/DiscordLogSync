@@ -9,7 +9,7 @@ namespace DiscordLogSync
     {
         public const string GUID    = "com.byawn.DiscordLogSync";
         public const string NAME    = "DiscordLogSync";
-        public const string VERSION = "1.0.0";
+        public const string VERSION = "1.0.1";
 
         // Config entries - public so DiscordLogListener can read them
         public static ConfigEntry<string> WebhookUrl;

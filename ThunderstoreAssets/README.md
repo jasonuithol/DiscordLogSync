@@ -11,16 +11,14 @@ with local buffering so no lines are lost on unexpected process death.
 Every log line
       │
       ▼
-[Timestamp + format]
-      │
-      ▼
 BepInEx/DiscordLogBuffer.txt   ← flushed to disk immediately, every line
       │
       ▼ (every N seconds, background thread)
 Discord Webhook POST
       │
-      ├─ 200 OK  → truncate buffer, start fresh
-      └─ failure → leave buffer, retry next tick
+      ├─ read from front of buffer
+      ├─── success (200) → remove read lines from front.
+      └─── failure (500) → leave buffer, retry next tick
 
 On next startup:
   buffer file exists? → send as "recovered from crash" → delete → begin fresh
@@ -52,14 +50,14 @@ Output: `bin/Release/netstandard2.1/DiscordLogger.dll`
 
 1. Copy `DiscordLogger.dll` into `BepInEx/plugins/`
 2. Launch the game once to generate the config file
-3. Open `BepInEx/config/com.yourname.discordlogger.cfg`
+3. Open `BepInEx/config/com.byawn.DiscordLogSync.cfg`
 4. Set your webhook URL:
 
 ```ini
 [Discord]
 WebhookUrl = https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 SendIntervalSeconds = 3
-MaxEmbedChars = 3800
+MaxMessageChars = 1800
 ```
 
 5. Restart
@@ -72,7 +70,7 @@ MaxEmbedChars = 3800
 |----------------------|---------|----------------------------------------------------------|
 | `WebhookUrl`         | (empty) | **Required.** Discord webhook URL.                       |
 | `SendIntervalSeconds`| `3`     | How often to flush buffer to Discord. Minimum 2.         |
-| `MaxEmbedChars`      | `3800`  | Characters per embed. Oldest lines dropped if exceeded.  |
+| `MaxMessageChars`    | `1800`  | Characters per embed.                                    |
 
 ---
 
@@ -83,11 +81,11 @@ MaxEmbedChars = 3800
 - Created fresh each run
 - Every line flushed to disk immediately (no in-memory buffering)
 - If the file exists on startup → previous run crashed → contents sent as recovery message
-- Deleted/truncated after each successful Discord POST
+- Treated like a FIFO so as to fit inside Discord message size limits.
 
 ---
 
-## Discord Message Colors
+## Discord Message Colors [UNUSED FEATURE?]
 
 | Situation             | Color  |
 |-----------------------|--------|

@@ -72,10 +72,8 @@ namespace DiscordLogSync
         {
             if (_disposed) return;
 
-            // Format: [2026-03-27 14:32:01.456] [Info   ] [PluginName] Message text
-//            string timestamp = DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss.fff");
-//            string line      = $"[{timestamp}] [{e.Level,-7}] [{e.Source?.SourceName ?? "?"}] {e.Data}";
-            string line = e.Data?.ToString() ?? "";
+            string line = (e.Data?.ToString() ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(line)) return;
 
             lock (_fileLock)
             {
