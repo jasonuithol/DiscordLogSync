@@ -1,92 +1,63 @@
 using BepInEx;
-using BepInEx.Logging;
 using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
-using System.Text.RegularExpressions;
 using System.Threading;
 
 namespace DiscordLogSync
 {
     /// <summary>
-    /// Plugs into BepInEx's log pipeline.
-    /// Every log line is immediately written + flushed to a local buffer file.
-    /// A background timer periodically reads the OLDEST lines from the buffer and
-    /// POSTs them to Discord. On success, only the sent lines are removed — new lines
-    /// keep accumulating at the end. If the buffer is larger than one message, it will
-    /// catch up over subsequent ticks. Nothing is ever dropped.
-    /// On startup, any leftover buffer (from a previous crash) is sent first.
-    /// On clean shutdown, a final flush is attempted.
+    /// One instance per source. Owns a buffer file, a send timer, and a webhook URL.
+    /// Lines are fed in via WriteToBuffer(). Every write is flushed to disk immediately.
+    /// A background timer sends the oldest buffered lines to Discord, trimming exactly
+    /// those bytes on success. Nothing is ever dropped.
     /// </summary>
-    public class DiscordLogListener : ILogListener, IDisposable
+    public class DiscordLogListener : IDisposable
     {
-        // Server name
-        private string ServerName = "Valheim";
-
-        // ── Paths ──────────────────────────────────────────────────────────────
-        private static readonly string BufferPath =
-            Path.Combine(Paths.BepInExRootPath, "DiscordLogBuffer.txt");
-
         // ── State ──────────────────────────────────────────────────────────────
-        private readonly object     _fileLock = new object();
+        private readonly string     _bufferPath;
+        private readonly string     _webhookUrl;
+        private readonly string     _serverName;
+        private readonly string     _sourceName;
+        private readonly object     _fileLock  = new object();
         private StreamWriter        _writer;
-        private readonly HttpClient _http     = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
+        private readonly HttpClient _http      = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         private readonly Timer      _sendTimer;
         private volatile bool       _disposed;
-
-        // Prevent overlapping send attempts
-        private int _sending = 0;
+        private int                 _sending   = 0;
 
         // ── Constructor ────────────────────────────────────────────────────────
-        public DiscordLogListener()
+        public DiscordLogListener(string sourceName, string serverName, string webhookUrl)
         {
-            // Obtain server name
-            string[] args = Environment.GetCommandLineArgs();
-            for (int i = 0; i < args.Length - 1; i++)
-            {
-                if (args[i] == "-name")
-                {
-                    ServerName = args[i + 1];
-                    break;
-                }
-            }
+            _sourceName = sourceName;
+            _serverName = serverName;
+            _webhookUrl = webhookUrl;
+            _bufferPath = Path.Combine(Paths.BepInExRootPath, $"DiscordLogBuffer_{sourceName}.txt");
 
-            // ① Send any leftover buffer from a previous crash before normal logging begins.
-            //    Opens/closes the file directly (no _writer yet).
             RecoverAndSendLeftoverBuffer();
-
-            // ② Open buffer in Append mode — preserves any lines not yet sent from recovery.
             _writer = OpenWriter(FileMode.Append);
 
-            // ③ Start the background send timer.
             int intervalMs = Math.Max(2, Plugin.SendIntervalSeconds.Value) * 1000;
             _sendTimer = new Timer(OnTimerTick, null, intervalMs, intervalMs);
         }
 
-        // ── ILogListener ───────────────────────────────────────────────────────
+        // ── Public API ─────────────────────────────────────────────────────────
 
-        public void LogEvent(object sender, LogEventArgs e)
+        /// <summary>Write a line to the buffer. Blank lines are dropped here and nowhere else.</summary>
+        public void WriteToBuffer(string line)
         {
             if (_disposed) return;
 
-            string line = (e.Data?.ToString() ?? "").Trim();
-            if (string.IsNullOrWhiteSpace(line)) return;
+            string trimmed = (line ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(trimmed)) return;
 
             lock (_fileLock)
             {
-                try
-                {
-                    // AutoFlush = true, so this hits disk immediately.
-                    // A hard kill after this write loses at most the current line.
-                    _writer?.WriteLine(line);
-                }
-                catch
-                {
-                    // Never let a logging error propagate into the game.
-                }
+                try { _writer?.WriteLine(trimmed); }
+                catch { }
             }
         }
 
@@ -95,36 +66,26 @@ namespace DiscordLogSync
         private void OnTimerTick(object _)
         {
             if (_disposed) return;
-
-            // Skip if a previous send is still in-flight
             if (Interlocked.CompareExchange(ref _sending, 1, 0) != 0) return;
 
-            try   { TrySendBuffer($"📋 [{ServerName}] {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
+            try   { TrySendBuffer($"📋 [{_sourceName}][{_serverName}] {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
             finally { Interlocked.Exchange(ref _sending, 0); }
         }
 
         // ── Send logic ─────────────────────────────────────────────────────────
 
-        /// <summary>
-        /// Reads the OLDEST lines from the buffer that fit within the Discord message
-        /// limit, POSTs them, and on success rewrites the buffer without those lines.
-        /// New lines accumulate at the end undisturbed. If there is more in the buffer
-        /// than fits in one message, the next tick will send the next chunk.
-        /// </summary>
         private void TrySendBuffer(string title)
         {
-            // Flush writer so we see latest content (brief lock)
             lock (_fileLock)
             {
                 try { _writer?.Flush(); }
                 catch { return; }
             }
 
-            // Read current buffer outside the lock
             string allContent;
             try
             {
-                using var fs     = new FileStream(BufferPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                using var fs     = new FileStream(_bufferPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
                 using var reader = new StreamReader(fs, Encoding.UTF8);
                 allContent       = reader.ReadToEnd();
             }
@@ -132,54 +93,45 @@ namespace DiscordLogSync
 
             if (string.IsNullOrWhiteSpace(allContent)) return;
 
-            // Build the oldest-first chunk that fits within the Discord limit.
-            // Blank lines are skipped for display but still counted for trimming.
-            int maxChars = Math.Clamp(Plugin.MaxMessageChars.Value, 100, 1900);
-            string[] allLines = allContent.Split('\n');
+            int maxChars     = Math.Clamp(Plugin.MaxMessageChars.Value, 100, 1900);
+            var toDisplay    = new List<string>();
+            int displayChars = 0;
+            int charPos      = 0;
+            int searchFrom   = 0;
 
-            var toDisplay     = new List<string>();
-            int displayChars  = 0;
-            int linesConsumed = 0;  // how many lines (including blanks) to remove on success
-
-            foreach (string rawLine in allLines)
+            while (searchFrom <= allContent.Length)
             {
-                string line = rawLine.TrimEnd('\r');
+                int  newline  = allContent.IndexOf('\n', searchFrom);
+                bool lastLine = newline == -1;
+                int  lineEnd  = lastLine ? allContent.Length : newline;
+                int  nextPos  = lastLine ? allContent.Length : newline + 1;
 
-                if (string.IsNullOrWhiteSpace(line))
-                {
-                    linesConsumed++;
-                    continue;
-                }
+                string line = allContent.Substring(searchFrom, lineEnd - searchFrom).TrimEnd('\r');
 
-                // Stop if adding this line would exceed the limit
                 if (displayChars + line.Length + 1 > maxChars) break;
 
                 toDisplay.Add(line);
                 displayChars += line.Length + 1;
-                linesConsumed++;
+                charPos       = nextPos;
+                searchFrom    = nextPos;
+                if (lastLine) break;
             }
 
             if (toDisplay.Count == 0) return;
 
-            string body = string.Join("\n", toDisplay);
+            int    consumedBytes = Encoding.UTF8.GetByteCount(allContent.Substring(0, charPos));
+            string body          = string.Join("\n", toDisplay);
 
-            // POST
             bool sent = false;
             try
             {
                 PostToDiscord(title, body).GetAwaiter().GetResult();
                 sent = true;
             }
-            catch
-            {
-                // Leave buffer intact; retry next tick
-            }
+            catch { }
 
             if (!sent) return;
 
-            // Remove exactly the lines we sent from the top of the buffer.
-            // Hold the lock for the rewrite so LogEvent writes block briefly (< 1ms)
-            // rather than writing to a file mid-rewrite.
             lock (_fileLock)
             {
                 try
@@ -187,96 +139,86 @@ namespace DiscordLogSync
                     _writer?.Dispose();
                     _writer = null;
 
-                    // Re-read: new lines may have been appended while we were sending
-                    string currentContent;
-                    using (var fs     = new FileStream(BufferPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
-                    using (var reader = new StreamReader(fs, Encoding.UTF8))
-                        currentContent = reader.ReadToEnd();
+                    byte[] current = File.ReadAllBytes(_bufferPath);
+                    File.WriteAllBytes(_bufferPath,
+                        current.Length <= consumedBytes
+                            ? Array.Empty<byte>()
+                            : current.Skip(consumedBytes).ToArray());
 
-                    // Drop the first linesConsumed lines and rewrite
-                    string[] currentLines = currentContent.Split('\n');
-                    string   remaining    = string.Join("\n", currentLines.Skip(linesConsumed));
-
-                    File.WriteAllText(BufferPath, remaining, Encoding.UTF8);
-
-                    // Reopen in append mode to continue accumulating
                     _writer = OpenWriter(FileMode.Append);
                 }
                 catch
                 {
-                    // Best effort — try to at least reopen the writer
                     try { _writer = OpenWriter(FileMode.Append); } catch { }
                 }
             }
         }
 
-        /// <summary>
-        /// Called once at startup before _writer is opened.
-        /// Sends the first chunk of any leftover buffer as a crash-recovery message,
-        /// trims those lines, and leaves the remainder for the normal timer to handle.
-        /// </summary>
         private void RecoverAndSendLeftoverBuffer()
         {
-            if (!File.Exists(BufferPath)) return;
+            if (!File.Exists(_bufferPath)) return;
 
             string allContent;
-            try { allContent = File.ReadAllText(BufferPath, Encoding.UTF8); }
+            try { allContent = File.ReadAllText(_bufferPath, Encoding.UTF8); }
             catch { return; }
 
-            if (string.IsNullOrWhiteSpace(allContent))
+            if (string.IsNullOrWhiteSpace(allContent)) { TryDeleteBuffer(); return; }
+
+            int maxChars     = Math.Clamp(Plugin.MaxMessageChars.Value, 100, 1900);
+            var toDisplay    = new List<string>();
+            int displayChars = 0;
+            int charPos      = 0;
+            int searchFrom   = 0;
+
+            while (searchFrom <= allContent.Length)
             {
-                TryDeleteBuffer();
-                return;
-            }
+                int  newline  = allContent.IndexOf('\n', searchFrom);
+                bool lastLine = newline == -1;
+                int  lineEnd  = lastLine ? allContent.Length : newline;
+                int  nextPos  = lastLine ? allContent.Length : newline + 1;
 
-            int maxChars = Math.Clamp(Plugin.MaxMessageChars.Value, 100, 1900);
-            string[] allLines = allContent.Split('\n');
+                string line = allContent.Substring(searchFrom, lineEnd - searchFrom).TrimEnd('\r');
 
-            var toDisplay     = new List<string>();
-            int displayChars  = 0;
-            int linesConsumed = 0;
-
-            foreach (string rawLine in allLines)
-            {
-                string line = rawLine.TrimEnd('\r');
-                if (string.IsNullOrWhiteSpace(line)) { linesConsumed++; continue; }
                 if (displayChars + line.Length + 1 > maxChars) break;
+
                 toDisplay.Add(line);
                 displayChars += line.Length + 1;
-                linesConsumed++;
+                charPos       = nextPos;
+                searchFrom    = nextPos;
+                if (lastLine) break;
             }
 
             if (toDisplay.Count == 0) { TryDeleteBuffer(); return; }
 
-            string body = string.Join("\n", toDisplay);
+            int    consumedBytes = Encoding.UTF8.GetByteCount(allContent.Substring(0, charPos));
+            string body          = string.Join("\n", toDisplay);
+
             bool sent = false;
             try
             {
-                PostToDiscord("⚠️ Recovered — previous session ended unexpectedly", body)
-                    .GetAwaiter().GetResult();
+                PostToDiscord(
+                    $"⚠️ [{_sourceName}][{_serverName}] Recovered — previous session ended unexpectedly — {DateTime.Now:yyyy-MM-dd HH:mm:ss}",
+                    body).GetAwaiter().GetResult();
                 sent = true;
             }
             catch { }
 
-            if (!sent) return; // leave buffer intact; will retry on next startup
+            if (!sent) return;
 
-            // Trim sent lines, leave remainder for normal timer
-            string remaining = string.Join("\n", allLines.Skip(linesConsumed));
-            if (string.IsNullOrWhiteSpace(remaining))
+            byte[] raw = File.ReadAllBytes(_bufferPath);
+            if (raw.Length <= consumedBytes)
                 TryDeleteBuffer();
             else
-                File.WriteAllText(BufferPath, remaining, Encoding.UTF8);
+                File.WriteAllBytes(_bufferPath, raw.Skip(consumedBytes).ToArray());
         }
 
         // ── Discord HTTP ───────────────────────────────────────────────────────
 
         private System.Threading.Tasks.Task PostToDiscord(string title, string body)
         {
-            // Strip consecutive blank lines
-            string cleanBody = Regex.Replace(body, @"\n\s*\n", "\n");
-            string message   = $"**{title}**\n{cleanBody.TrimEnd()}";
-            string json      = "{\"content\":" + JsonString(message) + "}";
-            return PostJson(Plugin.WebhookUrl.Value, json);
+            string message = $"**{title}**\n{body.TrimEnd()}";
+            string json    = "{\"content\":" + JsonString(message) + "}";
+            return PostJson(_webhookUrl, json);
         }
 
         private async System.Threading.Tasks.Task PostJson(string url, string json)
@@ -292,18 +234,17 @@ namespace DiscordLogSync
 
         // ── Helpers ────────────────────────────────────────────────────────────
 
-        private static StreamWriter OpenWriter(FileMode mode)
+        private StreamWriter OpenWriter(FileMode mode)
         {
-            var fs = new FileStream(BufferPath, mode, FileAccess.Write, FileShare.ReadWrite);
+            var fs = new FileStream(_bufferPath, mode, FileAccess.Write, FileShare.ReadWrite);
             return new StreamWriter(fs, Encoding.UTF8) { AutoFlush = true };
         }
 
-        private static void TryDeleteBuffer()
+        private void TryDeleteBuffer()
         {
-            try { File.Delete(BufferPath); } catch { }
+            try { File.Delete(_bufferPath); } catch { }
         }
 
-        /// <summary>Serialize a C# string as a JSON string literal (with quotes).</summary>
         private static string JsonString(string s)
         {
             var sb = new StringBuilder(s.Length + 2);
@@ -315,13 +256,11 @@ namespace DiscordLogSync
                     case '"':  sb.Append("\\\""); break;
                     case '\\': sb.Append("\\\\"); break;
                     case '\n': sb.Append("\\n");  break;
-                    case '\r':                    break;  // strip CR
+                    case '\r':                    break;
                     case '\t': sb.Append("\\t");  break;
                     default:
-                        if (c < 0x20)
-                            sb.Append($"\\u{(int)c:x4}");
-                        else
-                            sb.Append(c);
+                        if (c < 0x20) sb.Append($"\\u{(int)c:x4}");
+                        else          sb.Append(c);
                         break;
                 }
             }
@@ -338,11 +277,9 @@ namespace DiscordLogSync
 
             _sendTimer?.Dispose();
 
-            // Final flush on clean shutdown — sends whatever is in the buffer right now.
-            // Any remainder beyond one message stays in the buffer for recovery on next start.
             if (Interlocked.CompareExchange(ref _sending, 1, 0) == 0)
             {
-                try   { TrySendBuffer($"🛑 [{ServerName}] Server Shutdown - {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
+                try   { TrySendBuffer($"🛑 [{_sourceName}][{_serverName}] Server Shutdown — {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
                 catch { }
             }
 

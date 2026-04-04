@@ -1,6 +1,7 @@
 using BepInEx;
 using BepInEx.Configuration;
-using BepInEx.Logging;
+using System;
+using System.IO;
 
 namespace DiscordLogSync
 {
@@ -11,44 +12,80 @@ namespace DiscordLogSync
         public const string NAME    = "DiscordLogSync";
         public const string VERSION = "1.0.1";
 
-        // Config entries - public so DiscordLogListener can read them
-        public static ConfigEntry<string> WebhookUrl;
-        public static ConfigEntry<int>    SendIntervalSeconds;
-        public static ConfigEntry<int>    MaxMessageChars;
+        // Shared
+        public static ConfigEntry<int> SendIntervalSeconds;
+        public static ConfigEntry<int> MaxMessageChars;
 
-        private DiscordLogListener _listener;
+        // BepInEx log source
+        public static ConfigEntry<bool>   BepInExEnabled;
+        public static ConfigEntry<string> BepInExWebhookUrl;
+
+        // Console source
+        public static ConfigEntry<bool>   ConsoleEnabled;
+        public static ConfigEntry<string> ConsoleWebhookUrl;
+
+        private DiscordLogListener  _bepinexListener;
+        private LogTailer           _logTailer;
+        private DiscordLogListener  _consoleListener;
+        private ConsoleInterceptor  _interceptor;
+        private TextWriter          _originalOut;
 
         private void Awake()
         {
-            WebhookUrl = Config.Bind(
-                "Discord", "WebhookUrl", "",
-                "Your Discord webhook URL. Required.");
+            SendIntervalSeconds = Config.Bind("General", "SendIntervalSeconds", 3,
+                "How often (seconds) to flush each buffer to Discord. Minimum 2.");
 
-            SendIntervalSeconds = Config.Bind(
-                "Discord", "SendIntervalSeconds", 3,
-                "How often (in seconds) to flush the buffer to Discord. Minimum 2 (Discord rate limit).");
+            MaxMessageChars = Config.Bind("General", "MaxMessageChars", 1800,
+                "Max characters per Discord message (hard limit 2000).");
 
-            MaxMessageChars = Config.Bind(
-                "Discord", "MaxMessageChars", 1800,
-                "Max log characters per Discord message (hard limit is 2000). If buffer exceeds this, oldest lines are dropped.");
+            BepInExEnabled = Config.Bind("Source.BepInEx", "Enabled", true,
+                "Tail BepInEx/LogOutput.log and send to Discord.");
 
-            if (string.IsNullOrWhiteSpace(WebhookUrl.Value))
+            BepInExWebhookUrl = Config.Bind("Source.BepInEx", "WebhookUrl", "",
+                "Discord webhook URL for BepInEx log output.");
+
+            ConsoleEnabled = Config.Bind("Source.Console", "Enabled", true,
+                "Intercept console (stdout) output and send to Discord.");
+
+            ConsoleWebhookUrl = Config.Bind("Source.Console", "WebhookUrl", "",
+                "Discord webhook URL for console (stdout) output.");
+
+            string serverName = "Valheim";
+            string[] args = Environment.GetCommandLineArgs();
+            for (int i = 0; i < args.Length - 1; i++)
+                if (args[i] == "-name") { serverName = args[i + 1]; break; }
+
+            if (BepInExEnabled.Value && !string.IsNullOrWhiteSpace(BepInExWebhookUrl.Value))
             {
-                Logger.LogWarning("[DiscordLogSync] No WebhookUrl configured — logging to Discord is disabled.");
-                return;
+                string logPath = Path.Combine(Paths.BepInExRootPath, "LogOutput.log");
+                _bepinexListener = new DiscordLogListener("BepInEx", serverName, BepInExWebhookUrl.Value);
+                _logTailer       = new LogTailer(logPath, _bepinexListener);
+                Logger.LogInfo($"[DiscordLogSync] BepInEx source active → {logPath}");
             }
+            else
+                Logger.LogWarning("[DiscordLogSync] BepInEx source disabled or no webhook configured.");
 
-            _listener = new DiscordLogListener();
-            BepInEx.Logging.Logger.Listeners.Add(_listener);
-
-            Logger.LogInfo($"[DiscordLogSync] Started. Flushing every {System.Math.Max(2, SendIntervalSeconds.Value)}s.");
+            if (ConsoleEnabled.Value && !string.IsNullOrWhiteSpace(ConsoleWebhookUrl.Value))
+            {
+                _consoleListener = new DiscordLogListener("Console", serverName, ConsoleWebhookUrl.Value);
+                _originalOut     = System.Console.Out;
+                _interceptor     = new ConsoleInterceptor(System.Console.Out, _consoleListener);
+                System.Console.SetOut(_interceptor);
+                Logger.LogInfo("[DiscordLogSync] Console source active.");
+            }
+            else
+                Logger.LogWarning("[DiscordLogSync] Console source disabled or no webhook configured.");
         }
 
         private void OnDestroy()
         {
-            if (_listener == null) return;
-            BepInEx.Logging.Logger.Listeners.Remove(_listener);
-            _listener.Dispose();
+            _logTailer?.Dispose();
+            _bepinexListener?.Dispose();
+
+            if (_originalOut != null)
+                System.Console.SetOut(_originalOut);
+            _interceptor?.Dispose();
+            _consoleListener?.Dispose();
         }
     }
 }
