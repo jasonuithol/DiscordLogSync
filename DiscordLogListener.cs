@@ -81,7 +81,7 @@ namespace DiscordLogSync
                 {
                     // AutoFlush = true, so this hits disk immediately.
                     // A hard kill after this write loses at most the current line.
-                    _writer?.WriteLine(line);
+                    _writer?.WriteLine($"[{e.Source.SourceName}] {e.Level} {line}");
                 }
                 catch
                 {

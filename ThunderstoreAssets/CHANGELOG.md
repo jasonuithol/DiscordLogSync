@@ -1,6 +1,8 @@
 ## 1.0.1
 
-- Fix issue where world saves were being skipped.
+- Add server name, timestamp to the message title
+- Don't double up timestamps in the message content
+- Show log event source and level.
 
 ## 1.0.0
 
