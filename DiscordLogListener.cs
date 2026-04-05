@@ -23,8 +23,8 @@ namespace DiscordLogSync
     /// </summary>
     public class DiscordLogListener : ILogListener, IDisposable
     {
-        // Server name
-        private string ServerName = "Valheim";
+        private readonly string _serverName;
+        private readonly string _webhookUrl;
 
         // ── Paths ──────────────────────────────────────────────────────────────
         private static readonly string BufferPath =
@@ -41,18 +41,10 @@ namespace DiscordLogSync
         private int _sending = 0;
 
         // ── Constructor ────────────────────────────────────────────────────────
-        public DiscordLogListener()
+        public DiscordLogListener(string serverName, string webhookUrl)
         {
-            // Obtain server name
-            string[] args = Environment.GetCommandLineArgs();
-            for (int i = 0; i < args.Length - 1; i++)
-            {
-                if (args[i] == "-name")
-                {
-                    ServerName = args[i + 1];
-                    break;
-                }
-            }
+            _serverName = serverName;
+            _webhookUrl = webhookUrl;
 
             // ① Send any leftover buffer from a previous crash before normal logging begins.
             //    Opens/closes the file directly (no _writer yet).
@@ -70,10 +62,20 @@ namespace DiscordLogSync
 
         public void LogEvent(object sender, LogEventArgs e)
         {
-            if (_disposed) return;
-
             string line = (e.Data?.ToString() ?? "").Trim();
             if (string.IsNullOrWhiteSpace(line)) return;
+            WriteToBuffer($"[{e.Source.SourceName}] {e.Level} {line}");
+        }
+
+        // ── Public API ─────────────────────────────────────────────────────────
+
+        /// <summary>Write a pre-formatted line to the buffer. Blank lines are silently dropped.</summary>
+        public void WriteToBuffer(string line)
+        {
+            if (_disposed) return;
+
+            string trimmed = (line ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(trimmed)) return;
 
             lock (_fileLock)
             {
@@ -81,7 +83,7 @@ namespace DiscordLogSync
                 {
                     // AutoFlush = true, so this hits disk immediately.
                     // A hard kill after this write loses at most the current line.
-                    _writer?.WriteLine($"[{e.Source.SourceName}] {e.Level} {line}");
+                    _writer?.WriteLine(trimmed);
                 }
                 catch
                 {
@@ -99,7 +101,7 @@ namespace DiscordLogSync
             // Skip if a previous send is still in-flight
             if (Interlocked.CompareExchange(ref _sending, 1, 0) != 0) return;
 
-            try   { TrySendBuffer($"📋 [{ServerName}] {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
+            try   { TrySendBuffer($"📋 [{_serverName}] {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
             finally { Interlocked.Exchange(ref _sending, 0); }
         }
 
@@ -252,7 +254,7 @@ namespace DiscordLogSync
             bool sent = false;
             try
             {
-                PostToDiscord("⚠️ Recovered — previous session ended unexpectedly", body)
+                PostToDiscord($"⚠️ [{_serverName}] Recovered — previous session ended unexpectedly — {DateTime.Now:yyyy-MM-dd HH:mm:ss}", body)
                     .GetAwaiter().GetResult();
                 sent = true;
             }
@@ -276,7 +278,7 @@ namespace DiscordLogSync
             string cleanBody = Regex.Replace(body, @"\n\s*\n", "\n");
             string message   = $"**{title}**\n{cleanBody.TrimEnd()}";
             string json      = "{\"content\":" + JsonString(message) + "}";
-            return PostJson(Plugin.WebhookUrl.Value, json);
+            return PostJson(_webhookUrl, json);
         }
 
         private async System.Threading.Tasks.Task PostJson(string url, string json)
@@ -342,7 +344,7 @@ namespace DiscordLogSync
             // Any remainder beyond one message stays in the buffer for recovery on next start.
             if (Interlocked.CompareExchange(ref _sending, 1, 0) == 0)
             {
-                try   { TrySendBuffer($"🛑 [{ServerName}] Server Shutdown - {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
+                try   { TrySendBuffer($"🛑 [{_serverName}] Server Shutdown — {DateTime.Now:yyyy-MM-dd HH:mm:ss}"); }
                 catch { }
             }
 

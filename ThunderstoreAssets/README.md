@@ -1,6 +1,6 @@
-# DiscordLogger — Valheim BepInEx Mod
+# DiscordLogSync — Valheim Dedicated Server Mod
 
-Pipes all BepInEx log output to a Discord webhook in near-real-time,
+Pipes Valheim dedicated server logs to a Discord webhook in near-real-time,
 with local buffering so no lines are lost on unexpected process death.
 
 ---
@@ -8,69 +8,75 @@ with local buffering so no lines are lost on unexpected process death.
 ## How It Works
 
 ```
-Every log line
+Server output (BepInEx pipeline, Console.Out, or raw stdout — see Source config)
       │
       ▼
-BepInEx/DiscordLogBuffer.txt   ← flushed to disk immediately, every line
+BepInEx/DiscordLogBuffer.txt   ← every line flushed to disk immediately
       │
-      ▼ (every N seconds, background thread)
+      ▼  (background thread, every N seconds)
 Discord Webhook POST
       │
-      ├─ read from front of buffer
-      ├─── success (200) → remove read lines from front.
-      └─── failure (500) → leave buffer, retry next tick
+      ├─ success → remove sent lines from front of buffer (FIFO)
+      └─ failure → leave buffer intact, retry next tick
 
-On next startup:
-  buffer file exists? → send as "recovered from crash" → delete → begin fresh
+On startup:
+  buffer file exists from previous run? → send as ⚠️ crash-recovery message first
+On clean shutdown:
+  flush remaining buffer as 🛑 shutdown message
 ```
 
 ---
 
-## Build
+## Log Sources
 
-**Requirements:** .NET SDK with `netstandard2.1` support (i.e. .NET Core 3.0+ or .NET 5+ SDK), `dotnet` CLI, Valheim dedicated server + BepInEx installed.
+Configure `Source` in the config file to choose what gets captured:
 
-> Targets `netstandard2.1`, which runs on Unity's Mono 6.4+ runtime. Not compatible with plain .NET Framework 4.7.2.
+| Source | What it captures | Risk |
+|--------|-----------------|------|
+| `BepInEx` *(default)* | Everything flowing through BepInEx's log pipeline | Safe |
+| `Console` | Managed `Console.Out` writes (superset of BepInEx in some cases) | Low |
+| `RawStdout` | **All** stdout at the OS fd level — including world saves, ZDO counts, PlayFab lines that bypass BepInEx entirely | **Experimental — read warning below** |
 
-The `.csproj` assumes the default Linux Steam dedicated server path:
-```
-~/.steam/steam/steamapps/common/Valheim dedicated server
-```
-Edit the `<ValheimDir>` property if your path differs.
+### ⚠️ RawStdout Warning
 
-```bash
-dotnet build -c Release
-```
+`RawStdout` uses Linux `pipe()` + `dup2()` to replace fd 1 with a kernel pipe.
+A background relay thread forwards every byte to the original stdout and extracts
+lines for Discord. **If the relay thread crashes or deadlocks, the pipe buffer
+(~64 KB) will fill up and block all stdout writes in the entire process.**
 
-Output: `bin/Release/netstandard2.1/DiscordLogger.dll`
+- Linux only — falls back to `BepInEx` source automatically on Windows or on any syscall failure
+- Only enable this if you specifically need to capture native stdout output (e.g. world save events)
+- Designed as a diagnostic tool, not a permanent production setting
 
 ---
 
 ## Install
 
-1. Copy `DiscordLogger.dll` into `BepInEx/plugins/`
-2. Launch the game once to generate the config file
+1. Copy `DiscordLogSync.dll` into `BepInEx/plugins/`
+2. Launch the server once to generate the config file
 3. Open `BepInEx/config/com.byawn.DiscordLogSync.cfg`
-4. Set your webhook URL:
+4. Set your webhook URL and preferred source:
 
 ```ini
 [Discord]
+Source = BepInEx
 WebhookUrl = https://discord.com/api/webhooks/YOUR_ID/YOUR_TOKEN
 SendIntervalSeconds = 3
 MaxMessageChars = 1800
 ```
 
-5. Restart
+5. Restart the server
 
 ---
 
-## Config Options
+## Config Reference
 
-| Key                  | Default | Description                                              |
-|----------------------|---------|----------------------------------------------------------|
-| `WebhookUrl`         | (empty) | **Required.** Discord webhook URL.                       |
-| `SendIntervalSeconds`| `3`     | How often to flush buffer to Discord. Minimum 2.         |
-| `MaxMessageChars`    | `1800`  | Characters per embed.                                    |
+| Key | Default | Description |
+|-----|---------|-------------|
+| `Source` | `BepInEx` | Log source: `BepInEx`, `Console`, or `RawStdout` (see above) |
+| `WebhookUrl` | *(empty)* | **Required.** Discord webhook URL. Plugin does nothing if unset. |
+| `SendIntervalSeconds` | `3` | Flush interval in seconds. Minimum 2 (Discord rate limit). |
+| `MaxMessageChars` | `1800` | Max characters per Discord message. Hard Discord limit is 2000. |
 
 ---
 
@@ -78,18 +84,23 @@ MaxMessageChars = 1800
 
 `BepInEx/DiscordLogBuffer.txt`
 
-- Created fresh each run
-- Every line flushed to disk immediately (no in-memory buffering)
-- If the file exists on startup → previous run crashed → contents sent as recovery message
-- Treated like a FIFO so as to fit inside Discord message size limits.
+- Every line is flushed to disk immediately — a hard kill loses at most the current line
+- Treated as a FIFO queue: oldest lines sent first, newest preserved at the back
+- If the file exists on startup, its contents are sent as a crash-recovery message before normal logging begins
 
 ---
 
-## Discord Message Colors [UNUSED FEATURE?]
+## Build
 
-| Situation             | Color  |
-|-----------------------|--------|
-| Contains `[Fatal]` or `[Error]` | 🔴 Red    |
-| Contains `[Warning]`            | 🟠 Orange |
-| Recovery (crash)                | 🟣 Purple |
-| Normal                          | 🔵 Blue   |
+Requires .NET SDK with `netstandard2.1` support and a Valheim dedicated server + BepInEx installation.
+The `.csproj` assumes the default Linux Steam path:
+
+```
+~/.steam/steam/steamapps/common/Valheim dedicated server
+```
+
+```bash
+./build.sh        # dotnet build -c Release
+./deploy_server.sh # copy DLL + config to local server
+./package.sh      # zip ThunderstoreAssets + DLL for upload
+```
