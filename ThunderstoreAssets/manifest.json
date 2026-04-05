@@ -1,6 +1,6 @@
 {
     "name": "DiscordLogSync",
-    "version_number": "1.0.2",
+    "version_number": "1.0.3",
     "website_url": "https://github.com/jasonuithol/DiscordLogSync",
     "description": "Pipes Valheim dedicated server logs to a Discord webhook in near-real-time. Configurable source: BepInEx pipeline, Console, or RawStdout (captures world saves and native stdout via fd-level interception).",
     "dependencies": [

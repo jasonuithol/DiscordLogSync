@@ -23,9 +23,9 @@ namespace DiscordLogSync
 
         /// <summary>
         /// EXPERIMENTAL — HIGH RISK. See config comment below.
-        /// Intercepts stdout at the OS file descriptor level. Captures
+        /// Intercepts stdout at the CRT/OS file descriptor level. Captures
         /// everything including world saves and native stdout writes.
-        /// Linux only.
+        /// Linux and Windows.
         /// </summary>
         RawStdout
     }
@@ -35,7 +35,7 @@ namespace DiscordLogSync
     {
         public const string GUID    = "com.byawn.DiscordLogSync";
         public const string NAME    = "DiscordLogSync";
-        public const string VERSION = "1.0.2";
+        public const string VERSION = "1.0.3";
 
         // Config entries - public so DiscordLogListener can read them
         public static ConfigEntry<LogSource> Source;
@@ -55,12 +55,13 @@ namespace DiscordLogSync
                 "Log source. Choose one:\n" +
                 "  BepInEx   — Safe. Captures BepInEx log pipeline. Misses world saves / ZDO counts.\n" +
                 "  Console   — Captures managed Console.Out. Still misses native stdout writes.\n" +
-                "  RawStdout — !! EXPERIMENTAL / HIGH RISK !! Linux only. Uses pipe()+dup2() to\n" +
-                "              intercept stdout at the OS fd level. Captures EVERYTHING including\n" +
-                "              world saves and ZDO counts. If initialisation fails or the relay\n" +
-                "              thread dies, ALL server stdout will be silently swallowed until the\n" +
-                "              process exits. Only enable this if you specifically need to capture\n" +
-                "              evidence of world-save interruptions and understand the risk.");
+                "  RawStdout — !! EXPERIMENTAL / HIGH RISK !! Uses pipe()+dup2() (Linux/libc) or\n" +
+                "              _pipe()+_dup2() (Windows/ucrtbase.dll) to intercept stdout at the\n" +
+                "              CRT fd level. Captures EVERYTHING including world saves and ZDO\n" +
+                "              counts. If initialisation fails or the relay thread dies, ALL server\n" +
+                "              stdout will be silently swallowed until the process exits. Only\n" +
+                "              enable this if you need to capture evidence of world-save\n" +
+                "              interruptions and understand the risk.");
 
             WebhookUrl = Config.Bind(
                 "Discord", "WebhookUrl", "",
@@ -102,12 +103,6 @@ namespace DiscordLogSync
                     break;
 
                 case LogSource.RawStdout:
-                    if (Environment.OSVersion.Platform != PlatformID.Unix)
-                    {
-                        Logger.LogError("[DiscordLogSync] RawStdout source requires Linux. Falling back to BepInEx source.");
-                        BepInEx.Logging.Logger.Listeners.Add(_listener);
-                        break;
-                    }
                     Logger.LogWarning("[DiscordLogSync] RawStdout source: intercepting stdout at fd level via pipe()+dup2(). " +
                                       "If this breaks, ALL server stdout will be lost. See config for details.");
                     try

@@ -4,3 +4,4 @@ staging/
 release/
 *.kate-swp
 *.cfg
+resume-claude.sh
