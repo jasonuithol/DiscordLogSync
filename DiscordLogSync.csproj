@@ -8,7 +8,8 @@
   </PropertyGroup>
 
   <PropertyGroup>
-    <ValheimDir>$(HOME)/.steam/steam/steamapps/common/Valheim dedicated server</ValheimDir>
+    <ValheimDir Condition="Exists('/opt/valheim-server')">/opt/valheim-server</ValheimDir>
+    <ValheimDir Condition="!Exists('/opt/valheim-server')">$(HOME)/.steam/steam/steamapps/common/Valheim dedicated server</ValheimDir>
     <BepInExDir>$(ValheimDir)/BepInEx</BepInExDir>
   </PropertyGroup>
 

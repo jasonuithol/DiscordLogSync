@@ -35,7 +35,7 @@ namespace DiscordLogSync
     {
         public const string GUID    = "com.byawn.DiscordLogSync";
         public const string NAME    = "DiscordLogSync";
-        public const string VERSION = "1.0.3";
+        public const string VERSION = "1.0.4";
 
         // Config entries - public so DiscordLogListener can read them
         public static ConfigEntry<LogSource> Source;

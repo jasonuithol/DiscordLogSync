@@ -1,3 +1,7 @@
+## 1.0.4
+
+- Updated BepInEx dependency to 5.4.2333
+
 ## 1.0.3
 
 - **Windows compatibility for `RawStdout` source** — the fd-level pipe intercept now works on Windows via P/Invoke into `ucrtbase.dll` (`_dup`, `_dup2`, `_pipe`, `_read`, `_write`, `_close`). This works because `ucrtbase.dll` is the Universal CRT shared across Unity's native engine and all managed code in the process.
